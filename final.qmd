@@ -1,0 +1,147 @@
+---
+title: "final"
+format: html
+---
+---
+title: "FinalDailyAssignment"
+author: "Libby Prince"
+format: html
+editor: visual
+---
+
+report value for step 10
+
+```{r setup, include=FALSE}
+# Load all required libraries
+library(osmdata)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(terra)
+library(units)
+```
+
+```{r}
+# Step 1: Extract All Waterways from OpenStreetMap for Fort Collins
+set_overpass_url("https://overpass-api.de/api/interpreter")  # More reliable Overpass API
+
+bbox <- getbb("Fort Collins, Colorado")
+
+waterways <- opq(bbox = bbox) %>%
+  add_osm_feature(key = "waterway") %>%
+  osmdata_sf()
+
+# Check if data was returned
+if (is.null(waterways$osm_lines) || nrow(waterways$osm_lines) == 0) {
+  stop("❌ No waterway line data returned. Try again or check Overpass API.")
+}
+
+foco_waterways <- waterways$osm_lines
+unique(foco_waterways$name)
+
+```
+
+```{r}
+# Step 2: Filter Cache la Poudre River
+poudre <- foco_waterways %>%
+  filter(!is.na(name)) %>%
+  filter(grepl("cache.*poudre", name, ignore.case = TRUE)) %>%
+  filter(!grepl("ditch|inlet|outlet|reservoir", name, ignore.case = TRUE))
+
+# Merge into one feature
+poudre_union <- st_union(poudre)
+poudre_sf <- st_as_sf(poudre_union)
+```
+
+```{r}
+# Step 3 - Calculate River Length
+poudre_length <- st_length(poudre_sf)
+poudre_length
+```
+
+```{r}
+# Step 4 - Convert Line to Points
+poudre_pts <- st_cast(poudre_sf, "POINT")
+```
+
+```{r}
+url <- 'https://raw.githubusercontent.com/mikejohnson51/csu-ess-330/refs/heads/main/resources/foco-elev-cm.tif'
+elev <- rast(url)
+elev
+```
+
+```{r}
+# Step 6-8 - Extract Elevation Values
+elevation_values <- extract(elev, poudre_pts)
+river_data <- bind_cols(poudre_pts, elevation_values)
+
+river_data <- river_data %>%
+  mutate(ID = seq_len(n()))
+head(river_data)
+```
+
+```{r}
+# Step 9 - Compute Sinuosity
+straight_line_dist <- st_distance(river_data[1,], river_data[nrow(river_data),])
+river_length <- st_length(poudre_sf)
+sinuosity <- river_length / straight_line_dist
+sinuosity
+```
+
+```{r}
+# Step 10 - Compute the Slope of the River
+elevation_change <- river_data$dem[1] - river_data$dem[nrow(river_data)]
+slope <- elevation_change / as.numeric(river_length)
+print(paste("Slope: ", slope, "cm/m"))
+```
+
+```{r}
+ggplot(river_data, aes(x = ID, y = dem)) +
+  geom_line(color = "darkblue", size = 1.2) +
+  labs(
+    title = "Elevation Profile Along Cache la Poudre River",
+    x = "Point ID Along River",
+    y = "Elevation (cm)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Convert sf object to a data frame with coordinates and elevation
+river_df <- river_data %>%
+  st_coordinates() %>%
+  as.data.frame() %>%
+  bind_cols(
+    dem = river_data$dem,
+    ID = river_data$ID
+  )
+
+# Create the map
+ggplot(river_df, aes(x = X, y = Y, color = dem)) +
+  geom_path(size = 2, na.rm = TRUE) +
+  scale_color_viridis_c(
+    option = "plasma",
+    name = "Elevation (cm)",
+    na.value = "gray60",
+    breaks = seq(147000, 157000, by = 2000),
+    labels = function(x) format(x, big.mark = ",", scientific = FALSE)
+  ) +
+  coord_fixed() +
+  labs(
+    title = "River Profile Map (Colored by Elevation)",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.key.width = unit(4, "cm"),
+    legend.key.height = unit(0.5, "cm")
+  )
+```
+
+```{r}
+ggsave("images/basic_river_map.png", width = 10, height = 7, units = "in", dpi = 300)
+```
+
